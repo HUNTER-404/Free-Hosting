@@ -5,40 +5,49 @@ import zipfile
 import subprocess
 import signal
 import psutil
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
+import time
+from flask import Flask, render_template, request, redirect, url_for, flash
 
 app = Flask(__name__)
-app.secret_key = "super_secret_key"  # এটা পরিবর্তন করে নেবেন
-UPLOAD_FOLDER = "uploads"
+app.secret_key = "super_secret_key"
+
+# ফোল্ডার কনফিগারেশন
+UPLOAD_FOLDER = os.path.abspath("uploads")
 ALLOWED_EXTENSIONS = {'zip', 'py'}
 
+# ফোল্ডার নিশ্চিত করা
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
 
-# রানিং প্রসেস সেভ রাখার ডিকশনারি
+# রানিং বটের ডাটা রাখার জন্য
 running_bots = {}
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-# ================== রুটস (Routes) ==================
-
 @app.route('/')
 def index():
-    # ফোল্ডার চেক করে ফাইল লিস্ট দেখানো
     projects = []
     if os.path.exists(UPLOAD_FOLDER):
         projects = os.listdir(UPLOAD_FOLDER)
     
-    # প্রসেস স্ট্যাটাস আপডেট
+    # স্ট্যাটাস চেক
     bot_status = {}
+    projects_to_remove = []
+    
     for p in projects:
+        # যদি ফোল্ডার না হয়, ইগনোর করবে
+        if not os.path.isdir(os.path.join(UPLOAD_FOLDER, p)):
+            continue
+            
         if p in running_bots:
-            if running_bots[p]['process'].poll() is None:
+            proc = running_bots[p]['process']
+            if proc.poll() is None:
                 bot_status[p] = "Running 🟢"
             else:
-                bot_status[p] = "Stopped 🔴"
-                del running_bots[p]
+                bot_status[p] = "Stopped 🔴 (Crashed/Done)"
+                # প্রসেস মরে গেলে লিস্ট থেকে সরানো
+                # del running_bots[p] (Commented out to show status)
         else:
             bot_status[p] = "Stopped 🔴"
 
@@ -50,64 +59,138 @@ def upload_file():
         return redirect(request.url)
     
     file = request.files['file']
-    user_name = request.form.get('username', 'user')
+    user_name = request.form.get('username', 'user').replace(" ", "_")
     
     if file and allowed_file(file.filename):
-        # ফোল্ডার তৈরি
-        project_name = f"{user_name}_{file.filename.split('.')[0]}"
+        clean_filename = file.filename.split('.')[0].replace(" ", "_")
+        project_name = f"{user_name}_{clean_filename}"
         save_path = os.path.join(UPLOAD_FOLDER, project_name)
         
+        # আগের ফোল্ডার থাকলে ক্লিন করা
         if os.path.exists(save_path):
-            shutil.rmtree(save_path) # আগের ফাইল ডিলিট
+            try:
+                if project_name in running_bots:
+                    running_bots[project_name]['process'].terminate()
+                    del running_bots[project_name]
+                shutil.rmtree(save_path)
+            except: pass
+            
         os.makedirs(save_path)
 
-        # ফাইল সেভ
         filepath = os.path.join(save_path, file.filename)
         file.save(filepath)
 
-        # জিপ হলে আনজিপ করা
         if file.filename.endswith('.zip'):
-            with zipfile.ZipFile(filepath, 'r') as zip_ref:
-                zip_ref.extractall(save_path)
-            os.remove(filepath) # জিপ ডিলিট
+            try:
+                with zipfile.ZipFile(filepath, 'r') as zip_ref:
+                    zip_ref.extractall(save_path)
+                os.remove(filepath)
+            except Exception as e:
+                return f"Zip Error: {e}"
 
         return redirect(url_for('index'))
     
-    return "Invalid File Format"
+    return "Invalid File"
 
 @app.route('/action/<action>/<project_name>')
 def manage_process(action, project_name):
     project_path = os.path.join(UPLOAD_FOLDER, project_name)
     
-    # ফাইল ডিটেকশন (Smart Detect)
-    script_file = None
-    for f in os.listdir(project_path):
-        if f.endswith('.py'): script_file = f; break
-        if f.endswith('.js'): script_file = f; break
-    
-    if not script_file:
-        return "No executables found!"
+    if not os.path.exists(project_path):
+        return "Project not found", 404
 
     # --- START ---
     if action == "start":
         if project_name in running_bots:
-            return redirect(url_for('index'))
+            if running_bots[project_name]['process'].poll() is None:
+                return redirect(url_for('index')) # অলরেডি রানিং
         
-        log_file = open(os.path.join(project_path, "log.txt"), "w+")
+        # ফাইল খোঁজা
+        script_file = None
+        for f in os.listdir(project_path):
+            if f.endswith('.py'): script_file = f; break
+            if f.endswith('.js'): script_file = f; break
         
-        cmd = [sys.executable, script_file] if script_file.endswith('.py') else ["node", script_file]
-        
-        # Requirements Install
-        if os.path.exists(os.path.join(project_path, "requirements.txt")):
-            subprocess.run([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"], cwd=project_path)
+        if not script_file:
+            return "No python or js file found in folder!"
 
-        proc = subprocess.Popen(cmd, cwd=project_path, stdout=log_out, stderr=log_out)
-        running_bots[project_name] = {'process': proc, 'log': log_file}
+        # লগ ফাইল তৈরি
+        log_path = os.path.join(project_path, "log.txt")
+        log_file = open(log_path, "w+", encoding="utf-8") # এই ভেরিয়েবল ঠিক করা হয়েছে
+
+        # কমান্ড তৈরি
+        cmd = []
+        if script_file.endswith('.py'):
+            # -u মানে unbuffered, যাতে লগ সাথে সাথে আসে
+            cmd = [sys.executable, "-u", script_file] 
+            
+            # requirements.txt অটো ইন্সটল
+            req_file = os.path.join(project_path, "requirements.txt")
+            if os.path.exists(req_file):
+                log_file.write(f"Installing requirements...\n")
+                log_file.flush()
+                try:
+                    subprocess.run([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"], cwd=project_path, stdout=log_file, stderr=log_file)
+                except Exception as e:
+                    log_file.write(f"Pip Error: {e}\n")
+
+        elif script_file.endswith('.js'):
+            cmd = ["node", script_file]
+            if os.path.exists(os.path.join(project_path, "package.json")):
+                 subprocess.run(["npm", "install"], cwd=project_path, stdout=log_file, stderr=log_file)
+
+        try:
+            log_file.write(f"Starting {script_file}...\n")
+            log_file.flush()
+            
+            # প্রসেস রান করা
+            proc = subprocess.Popen(cmd, cwd=project_path, stdout=log_file, stderr=log_file)
+            
+            running_bots[project_name] = {'process': proc, 'log': log_file}
+            
+        except Exception as e:
+            log_file.write(f"Failed to start: {e}\n")
+            log_file.close()
 
     # --- STOP ---
     elif action == "stop":
         if project_name in running_bots:
-            proc = running_bots[project_name]['process']
+            try:
+                proc = running_bots[project_name]['process']
+                proc.terminate()
+                proc.wait(timeout=2)
+            except:
+                try: proc.kill()
+                except: pass
+            
+            # ফাইল হ্যান্ডেল ক্লোজ করা
+            try: running_bots[project_name]['log'].close()
+            except: pass
+            
+            del running_bots[project_name]
+
+    # --- DELETE ---
+    elif action == "delete":
+        manage_process("stop", project_name)
+        if os.path.exists(project_path):
+            shutil.rmtree(project_path)
+
+    return redirect(url_for('index'))
+
+@app.route('/logs/<project_name>')
+def get_logs(project_name):
+    log_path = os.path.join(UPLOAD_FOLDER, project_name, "log.txt")
+    if os.path.exists(log_path):
+        try:
+            with open(log_path, 'r', encoding="utf-8", errors='replace') as f:
+                return f.read()
+        except:
+            return "Reading logs..."
+    return "Log file not created yet."
+
+if __name__ == '__main__':
+    # লোকাল টেস্টের জন্য
+    app.run(host='0.0.0.0', port=5000, debug=True)            proc = running_bots[project_name]['process']
             proc.terminate()
             running_bots[project_name]['log'].close()
             del running_bots[project_name]
