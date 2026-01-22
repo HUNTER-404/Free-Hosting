@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>My Hosting Panel</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #0f172a; color: white; }
+        .glass { background: rgba(255, 255, 255, 0.05); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.1); }
+    </style>
+</head>
+<body class="p-4 md:p-10">
+
+    <div class="max-w-4xl mx-auto text-center mb-10">
+        <h1 class="text-4xl font-bold text-emerald-400 mb-2">👻 MY HOSTING PANEL</h1>
+        <p class="text-gray-400">Host your Telegram Bots securely</p>
+    </div>
+
+    <!-- Upload Section -->
+    <div class="max-w-2xl mx-auto glass rounded-xl p-8 mb-10">
+        <form action="/upload" method="POST" enctype="multipart/form-data">
+            <div class="mb-4">
+                <input type="text" name="username" placeholder="Project Name" class="w-full bg-slate-800 p-3 rounded text-white border border-slate-600" required>
+            </div>
+            <div class="border-2 border-dashed border-slate-600 rounded-lg p-10 text-center hover:border-emerald-400 transition cursor-pointer relative">
+                <i class="fas fa-cloud-upload-alt text-4xl mb-3 text-emerald-400"></i>
+                <p>Click to select ZIP or PY file</p>
+                <input type="file" name="file" class="absolute inset-0 opacity-0 cursor-pointer" required>
+            </div>
+            <button type="submit" class="w-full mt-4 bg-emerald-500 hover:bg-emerald-600 text-black font-bold py-3 rounded transition">
+                🚀 UPLOAD TO PANEL
+            </button>
+        </form>
+    </div>
+
+    <!-- Active Bots Section -->
+    <div class="max-w-4xl mx-auto grid grid-cols-1 md:grid-cols-2 gap-6">
+        {% for project in projects %}
+        <div class="glass rounded-xl p-6 relative">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="text-xl font-bold">📦 {{ project }}</h3>
+                <span class="text-sm px-2 py-1 rounded {{ 'bg-green-500/20 text-green-400' if 'Running' in status[project] else 'bg-red-500/20 text-red-400' }}">
+                    {{ status[project] }}
+                </span>
+            </div>
+
+            <div class="flex gap-2 mb-4">
+                <a href="/action/start/{{ project }}" class="flex-1 bg-emerald-600 hover:bg-emerald-700 text-center py-2 rounded text-sm font-bold">
+                    <i class="fas fa-play"></i> Run
+                </a>
+                <a href="/action/stop/{{ project }}" class="flex-1 bg-red-600 hover:bg-red-700 text-center py-2 rounded text-sm font-bold">
+                    <i class="fas fa-stop"></i> Stop
+                </a>
+                <a href="/action/delete/{{ project }}" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded text-sm">
+                    <i class="fas fa-trash"></i>
+                </a>
+            </div>
+
+            <!-- Console Output -->
+            <div class="bg-black rounded p-3 h-32 overflow-y-auto text-xs font-mono text-green-400 border border-slate-800" id="console-{{project}}">
+                Loading logs...
+            </div>
+            <script>
+                setInterval(() => {
+                    fetch('/logs/{{ project }}')
+                        .then(r => r.text())
+                        .then(data => {
+                            const el = document.getElementById('console-{{project}}');
+                            el.innerText = data;
+                            el.scrollTop = el.scrollHeight; 
+                        });
+                }, 3000);
+            </script>
+        </div>
+        {% endfor %}
+    </div>
+
+</body>
+</html>
